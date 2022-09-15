@@ -1,0 +1,669 @@
+import numpy as np
+
+wildcard_constraints:
+    trial = '\d+'
+
+sims = ['max_outcome_prev', 'co_occur_mean', 'co_occur_noise_mean', 'noise_group_prev',
+        'num_noise_groups', 'single_outcome', 'random_scale', 'num_outcomes', 'co_occur_noise_mean2',
+        'num_noise_groups2', 'random_scale2', 'positive_control', 'negative_control',
+        'population_size', 'num_codes']
+
+rule all:
+    input:
+        expand('Param_Results/{sim_id}.csv', sim_id=sims),
+        expand('Plots/{sim_id}/row_count_boxplot.png', sim_id=sims)
+
+rule simulate_dataset:
+    output:
+        date_mtx=temp('Date_Matrices/{sim_id}_{trial}_date_mtx.csv.gz'),
+        people='Outcome_People/simulation_{sim_id}_{trial}.json',
+        codes='True_Signpost_Codes/simulation_{sim_id}_{trial}.json',
+        outcome_table='Outcome_Parameters/simulation_{sim_id}_{trial}.csv',
+        row_counts='Count_Tables/simulation_rows_{sim_id}_{trial}.csv',
+        col_counts='Count_Tables/simulation_cols_{sim_id}_{trial}.csv'
+    input:
+        trials='Trial_Tables/{sim_id}_trial_info.csv'
+    resources: mem_mb=20000
+    run:
+        import pandas as pd
+        import numpy as np
+        import json
+
+        trials = pd.read_csv(input.trials, index_col='Row_Number')
+        print(trials)
+        trials = trials[trials['Sim_ID'] == wildcards.sim_id]
+        print(trials)
+        trial_params = trials.iloc[int(wildcards.trial)]
+        print(trial_params)
+
+        # Parameters
+        max_outcome_prevalence = trial_params.loc['Max_Outcome_Prev']
+        min_signpost = trial_params.loc['Min_Signpost_Codes']
+        max_signpost = trial_params.loc['Max_Signpost_Codes']
+
+        max_noise_group_prevalence = trial_params.loc['Max_Noise_Group_Prev']
+        num_noise_groups = int(trial_params.loc['Num_Noise_Groups'])
+        min_per_noise_group = trial_params.loc['Min_Noise_Codes']
+        max_per_noise_group = trial_params.loc['Max_Noise_Codes']
+
+        total_codes = int(trial_params.loc['Total_Codes'])
+        max_signpost = min(max_signpost, total_codes // 2)
+        max_per_noise_group = min(max_per_noise_group, total_codes // 2)
+        num_people = int(trial_params.loc['Num_People'])
+        num_outcomes = int(trial_params.loc['Num_Outcomes'])
+
+        co_occurrence_dist_mean = trial_params.loc['Co_Occurrence_Mean']
+        co_occurrence_dist_mean_noise = trial_params.loc['Co_Occurrence_Noise_Mean']
+
+        random_noise_scale = trial_params.loc['Random_Noise_Scale']
+
+        np.random.seed(3141592653 + trial_params.loc['Seed_Offset'])
+
+        # Initialize all codes
+        # First num_outcomes will be used as outcomes
+        # Last code will represent I10 I think
+        all_codes = ['Sim' + str(i + 1) for i in range(total_codes)]
+        date_mtx = pd.DataFrame(index=['IID' + str(i + 1) for i in range(num_people)], columns=all_codes, dtype=float)
+        outcome_profile = pd.DataFrame(index=['Sim' + str(i) for i in range(1, num_outcomes + 1)], columns=['Prevalence', 'Signpost_Count'])
+
+        col_count_df = pd.DataFrame(index=date_mtx.columns)
+        col_count_df['Outcome_Signpost_Count'] = 0
+
+        outcomes = ['Sim' + str(i) for i in range(1, num_outcomes + 1)]
+        non_outcome_codes = [c for c in all_codes if c not in outcomes]
+
+        true_signpost = {}
+
+        for outcome in outcomes:
+            prevalence = np.random.random() * max_outcome_prevalence if num_outcomes > 1 else max_outcome_prevalence
+            print(outcome, prevalence)
+            num_outcome_ppl = int(num_people * prevalence)
+            outcome_people = np.random.choice(date_mtx.index, size=num_outcome_ppl, replace=False)
+            if min_signpost == 0 and max_signpost == 0:
+                signpost = []
+                num_signpost = 0
+            else:
+                num_signpost = 10 * np.random.randint(min_signpost // 10, max_signpost // 10)
+                option_codes = [c for c in all_codes if c != outcome]
+                signpost = np.random.choice(option_codes, size=num_signpost, replace=False)
+
+            outcome_profile.loc[outcome, 'Prevalence'] = prevalence
+            outcome_profile.loc[outcome, 'Signpost_Count'] = num_signpost
+
+            true_signpost[outcome] = list(signpost)
+
+            code_prob = pd.Series(index=signpost,data=np.random.exponential(size=num_signpost,scale=co_occurrence_dist_mean))
+            random_binomial = np.random.binomial(np.ones(num_signpost,dtype=int),
+                p=code_prob,
+                size=(num_outcome_ppl, num_signpost))
+            random_float = np.random.random(size=(num_outcome_ppl, num_signpost))
+
+            signpost_dm = pd.DataFrame(index=outcome_people,
+                columns=signpost,
+                data=random_binomial * random_float * 0.9)
+
+            signpost_dm = signpost_dm.replace(0,np.nan)
+            signpost_dm[outcome] = signpost_dm.max(axis=1) * 1.05
+
+            with np.errstate(invalid='ignore'):
+                date_mtx.loc[outcome_people, signpost_dm.columns] = np.fmin(
+                    date_mtx.loc[outcome_people, signpost_dm.columns],signpost_dm)
+
+            col_count_df.loc[signpost, 'Outcome_Signpost_Count'] = col_count_df.loc[signpost, 'Outcome_Signpost_Count'] + 1
+
+        json.dump(true_signpost, open(output.codes, 'w+'))
+
+        outcome_profile.index.name = 'Outcome'
+        outcome_profile.to_csv('Outcome_Parameters/simulation_' + wildcards.sim_id + '_' + wildcards.trial + '.csv')
+
+        groups = ['Group' + chr(int(i)) for i in range(65, 65 + num_noise_groups)]
+        col_count_df['Noise_Group_Count'] = 0
+
+        for group in groups:
+            print(group)
+            prevalence = np.random.random() * max_noise_group_prevalence
+            num_noise_ppl = int(num_people * prevalence)
+            noise_people = np.random.choice(date_mtx.index, size=num_noise_ppl, replace=False)
+            num_codes = 10 * np.random.randint(min_per_noise_group // 10, max_per_noise_group // 10)
+            noise_codes = np.random.choice(all_codes, size=num_codes, replace=False)
+
+            open('Noise_Groups/' + group + '_simulation_' + wildcards.sim_id + '_' + wildcards.trial + '.txt','w+').write('\n'.join(noise_codes) + '\n')
+
+            code_prob = pd.Series(index=noise_codes, data=np.random.exponential(size=num_codes, scale=co_occurrence_dist_mean_noise))
+            code_prob[code_prob >= 1] = 1
+            random_binomial = np.random.binomial(np.ones(num_codes,dtype=int), p=code_prob, size=(num_noise_ppl, num_codes))
+            random_float = np.random.random(size=(num_noise_ppl, num_codes))
+
+            noise_dm = pd.DataFrame(index=noise_people,
+                columns=noise_codes,
+                data=random_binomial * random_float)
+
+            noise_dm = noise_dm.replace(0,np.nan)
+
+            with np.errstate(invalid='ignore'):
+                date_mtx.loc[noise_people, noise_dm.columns] = np.fmin(date_mtx.loc[noise_people, noise_dm.columns], noise_dm)
+
+            col_count_df.loc[noise_codes, 'Noise_Group_Count'] = col_count_df.loc[noise_codes, 'Noise_Group_Count'] + 1
+
+        last_code = 'Sim' + str(int(total_codes))
+
+        date_mtx.loc[np.isnan(date_mtx[last_code]), last_code] = np.random.random(np.isnan(date_mtx[last_code]).astype(int).sum())
+        print(date_mtx)
+
+        for code, col in date_mtx.iteritems():
+            code_num = int(code.replace('Sim',''))
+            if code_num > 0 and code_num % 100 == 0:
+                print(code_num, flush=True)
+            if code == last_code:
+                continue
+            N = col.count()
+
+            add_fraction = np.random.random() * random_noise_scale
+            subtract_fraction = np.random.random() * random_noise_scale
+
+            num_add_ppl = round(add_fraction * N)
+            add_ppl = np.random.choice(col.index[np.isnan(col)], size=num_add_ppl, replace=False)
+
+            num_subtract_ppl = round(subtract_fraction * N)
+            subtract_ppl = np.random.choice(col.index[~np.isnan(col)], size=num_subtract_ppl, replace=False)
+
+            date_mtx.loc[add_ppl, code] = np.random.random(len(add_ppl))
+            date_mtx.loc[subtract_ppl, code] = np.nan
+
+        true_cases = {}
+
+        row_count_df = pd.DataFrame(index=date_mtx.index)
+        row_count_df['All_Code_Count'] = date_mtx.count(axis=1)
+        row_count_df['Outcome_Code_Count'] = date_mtx[outcomes].count(axis=1)
+        row_count_df['Trajectory_Case_Count'] = 0
+
+        col_count_df['People_Count'] = date_mtx.count()
+        print(col_count_df)
+
+        people_signpost_codes = {}
+        all_signpost_codes = set()
+
+        for outcome in outcomes:
+            print(outcome)
+            signpost_codes = true_signpost[outcome]
+            have_outcome = date_mtx[~np.isnan(date_mtx[outcome])]
+            outcome_vals = np.broadcast_to(have_outcome[outcome].values, (len(signpost_codes), len(have_outcome))).T
+            test_vals = have_outcome[signpost_codes]
+            before_test = test_vals < outcome_vals
+            outcome_people = have_outcome.index[before_test.astype(int).sum(axis=1) > 0]
+            true_cases[outcome] = list(outcome_people)
+            row_count_df.loc[outcome_people, 'Trajectory_Case_Count'] = row_count_df.loc[outcome_people, 'Trajectory_Case_Count'] + 1
+            for person in outcome_people:
+                if person not in people_signpost_codes.keys():
+                    people_signpost_codes[person] = []
+                people_signpost_codes[person].extend(date_mtx.loc[person, signpost_codes].dropna().index.drop(outcome, errors='ignore'))
+            all_signpost_codes = all_signpost_codes | set(signpost_codes)
+
+        people_with_outcome_signposts = list(people_signpost_codes.keys())
+        row_count_df.loc[people_with_outcome_signposts, 'Actual_Signpost_Codes'] = pd.Series(index=people_with_outcome_signposts, data=[len(set(people_signpost_codes[P])) for P in people_with_outcome_signposts])
+        row_count_df['Actual_Signpost_Codes'] = row_count_df['Actual_Signpost_Codes'].fillna(0)
+        row_count_df['Any_Signpost_Codes'] = date_mtx[list(all_signpost_codes)].count(axis=1)
+        row_count_df['Non_Outcome_Signpost_Codes'] = row_count_df['All_Code_Count'] - row_count_df['Actual_Signpost_Codes'] - row_count_df['Outcome_Code_Count']
+        row_count_df['Pure_Noise_Codes'] = date_mtx[[c for c in date_mtx.columns if c not in all_signpost_codes and c != last_code]].count(axis=1)
+
+        print(row_count_df)
+        row_count_df.index.name = 'IID'
+        row_count_df.to_csv(output.row_counts)
+
+        col_count_df.index.name = 'Code'
+        col_count_df.to_csv(output.col_counts)
+
+        json.dump(true_cases, open(output.people, 'w+'))
+
+        date_mtx.index.name = 'IID'
+        print(date_mtx)
+
+        date_mtx.to_csv(output.date_mtx)
+
+        print('End Code')
+
+rule test_outcomes:
+    output:
+        results='RR_Tests/simulation_{sim_id}.csv'
+    input:
+        date_mtx=lambda wildcards: 'Date_Matrices/' + wildcards.sim_id + '_date_mtx.csv.gz',
+        trials=lambda wildcards: 'Trial_Tables/' + '_'.join(wildcards.sim_id.split('_')[:-1]) + '_trial_info.csv'
+    resources: mem_mb=20000
+    run:
+        import pandas as pd
+        from scipy.stats import norm
+
+        df = pd.read_csv(input.date_mtx, nrows=None, index_col='IID')
+
+        print(df)
+
+        trials = pd.read_csv(input.trials, index_col='Row_Number')
+
+        print(wildcards.sim_id)
+        actual_id = '_'.join(wildcards.sim_id.split('_')[:-1])
+        trials = trials[trials['Sim_ID'] == actual_id]
+        trial = int(wildcards.sim_id.split('_')[-1])
+        trial_params = trials.iloc[trial]
+
+        print(trials)
+
+        num_outcomes = int(trial_params.loc['Num_Outcomes'])
+        last_code = 'Sim' + str(int(trial_params.loc['Total_Codes']))
+        outcomes = ['Sim' + str(i) for i in range(1,num_outcomes + 1)]
+
+        results_dfs = []
+
+        for outcome in outcomes:
+            print(outcome)
+            outcome_series = df[outcome]
+
+            # Do testing in 2D for efficiency
+            # Rows = codes, Columns = people
+
+            # 2D matrix of A
+            cast_shape = df.transpose().shape
+            print(cast_shape)
+            A_times = np.broadcast_to(df[last_code], cast_shape)
+            non_nan_A = ~np.isnan(A_times)
+            # 2D matrix of outcome/C
+            C_times = np.broadcast_to(outcome_series, cast_shape)
+            non_nan_C = ~np.isnan(C_times)
+            # 2D matrix of intermediate code rows by people
+            B_times = df.transpose().values
+            non_nan_B = ~np.isnan(B_times)
+
+            non_nan_ABC = non_nan_A & non_nan_B & non_nan_C
+
+            print('Upper Left')
+
+            # Upper left box
+            ABC = (A_times <= B_times) & (B_times <= C_times) & non_nan_ABC
+            BAC = (B_times <= A_times) & (A_times <= C_times) & non_nan_ABC
+            caseB_caseC = ABC | BAC
+
+            print('Upper Right')
+
+            # Upper right box
+            ACB = (A_times <= C_times) & (C_times <= B_times) & non_nan_ABC
+            AC_not_B = (A_times <= C_times) & ~non_nan_B
+            contB_caseC = ACB | AC_not_B
+
+            print('Lower Left')
+
+            # Lower left box
+            BA_not_C = (B_times <= A_times) & ~non_nan_C
+            AB_not_C = (A_times <= B_times) & ~non_nan_C
+            BAC = (B_times <= A_times) & (A_times <= C_times) & non_nan_ABC
+            caseB_contC = BA_not_C | AB_not_C | BAC
+
+            print('Lower Right')
+
+            # Lower right box
+            CAB = (C_times <= A_times) & (A_times <= B_times) & non_nan_ABC
+            CBA = (C_times <= B_times) & (B_times <= A_times) & non_nan_ABC
+            CA_not_B = (C_times <= A_times) & ~non_nan_B
+            A_not_B_not_C = ~non_nan_B & ~non_nan_C
+            contB_contC = CAB | CBA | CA_not_B | A_not_B_not_C
+
+            print('Counting')
+
+            results = pd.DataFrame(index=df.columns)
+            results['caseB_caseC'] = np.count_nonzero(caseB_caseC, axis=1)
+            results['contB_caseC'] = np.count_nonzero(contB_caseC, axis=1)
+            results['caseB_contC'] = np.count_nonzero(caseB_contC, axis=1)
+            results['contB_contC'] = np.count_nonzero(contB_contC, axis=1)
+
+            results.index.name = 'signpost'
+            results['outcome'] = outcome
+
+            results_dfs.append(results)
+
+        results = pd.concat(results_dfs)
+
+        results['numerator'] = results['caseB_caseC'] / (results['caseB_caseC'] + results['contB_caseC'])
+        results['denominator'] = results['caseB_contC'] / (results['caseB_contC'] + results['contB_contC'])
+        results['RR'] = results['numerator'] / results['denominator']
+
+        results['LN_RR'] = np.log(results['RR'])
+        four_cols = ['caseB_caseC', 'contB_caseC', 'caseB_contC', 'contB_contC']
+        results['SE_LN_RR'] = (results[four_cols].astype(float) ** -1).sum(axis=1) ** 0.5
+        results['P'] = 2 * (1 - norm.cdf(abs(results['LN_RR']), loc=0, scale=results['SE_LN_RR']))
+        results['sum_check'] = results[four_cols].sum(axis=1)
+
+        print(results)
+        results.to_csv(output.results)
+
+rule make_filtered_trajectories:
+    output:
+        # trajectories=temp('Trajectories/trajectories_{outcome}_simulation_{sim_id}.csv'),
+        keep_codes='Signpost_Codes/simulation_{sim_id}.json',
+        people='Training_Set_Cases/simulation_{sim_id}.json'
+    input:
+        results = 'RR_Tests/simulation_{sim_id}.csv',
+        date_mtx = 'Date_Matrices/{sim_id}_date_mtx.csv.gz',
+        trials = lambda wildcards: 'Trial_Tables/' + '_'.join(wildcards.sim_id.split('_')[:-1]) + '_trial_info.csv'
+    resources: mem_mb=20000
+    run:
+        import pandas as pd
+        import json
+
+        trials = pd.read_csv(input.trials, index_col='Row_Number')
+
+        print(wildcards.sim_id)
+        actual_id = '_'.join(wildcards.sim_id.split('_')[:-1])
+        trials = trials[trials['Sim_ID'] == actual_id]
+        trial = int(wildcards.sim_id.split('_')[-1])
+        trial_params = trials.iloc[trial]
+
+        print(trials)
+
+        num_outcomes = int(trial_params.loc['Num_Outcomes'])
+        last_code = 'Sim' + str(int(trial_params.loc['Total_Codes']))
+        outcomes = ['Sim' + str(i) for i in range(1,num_outcomes + 1)]
+
+        keep_codes = {}
+        training_people = {}
+
+        for outcome in outcomes:
+            results = pd.read_csv(input.results, index_col='signpost')
+            results = results[results['outcome'] == outcome]
+            results = results[(results['RR'] > 1) | np.isinf(results['RR'])]
+            results = results[(results['P'] <= 0.05) | np.isinf(results['RR'])]
+            print(results)
+
+            df = pd.read_csv(input.date_mtx, index_col='IID', nrows=None)
+            outcome_series = df[outcome]
+
+            keep_cols = list(results.index)
+            keep_cols.append(last_code)
+            keep_cols.append(outcome)
+
+            """
+            trajectories = df[keep_cols].apply(lambda x: '->'.join(x.dropna().astype(str).sort_values().index), axis=1)
+            trajectories.name = 'Filtered_Trajectory'
+            print(trajectories)
+    
+            trajectories2 = pre_outcome_df[keep_cols].apply(lambda x: '->'.join(x.dropna().astype(str).sort_values().index), axis=1)
+            trajectories2.name = 'Filtered_Trajectory_Pre_Outcome'
+    
+            full_trajectories = df.apply(lambda x: '->'.join(x.dropna().astype(str).sort_values().index),axis=1)
+            full_trajectories.name = 'Full_Trajectory'
+            print(full_trajectories)
+    
+            all_trajectories = pd.concat([trajectories, trajectories2, full_trajectories], axis=1)
+            print(all_trajectories)
+            """
+
+            outcome_mtx = np.broadcast_to(outcome_series.values, df.transpose().shape).T
+            pre_outcome_df = df.mask((df > outcome_mtx) | np.isnan(outcome_mtx))
+
+            all_trajectories=pd.DataFrame(index=df.index)
+            all_trajectories['Filtered_Code_Count'] = df[keep_cols].count(axis=1)
+            all_trajectories['Filtered_Pre_Outcome_Code_Count'] = pre_outcome_df[keep_cols].count(axis=1)
+            all_trajectories['Full_Code_Count'] = df.count(axis=1)
+
+            outcome_cases = all_trajectories.index[all_trajectories['Filtered_Pre_Outcome_Code_Count'] > 1]
+            print(outcome_cases)
+            training_people[outcome] = list(outcome_cases)
+            keep_codes[outcome] = list(results.index)
+
+            print(all_trajectories)
+
+        json.dump(training_people, open(output.people, 'w+'))
+        json.dump(keep_codes, open(output.keep_codes, 'w+'))
+
+rule benchmark_trial:
+    output:
+        outcome_table='Sim_Results/simulation_{sim_id}.csv'
+    input:
+        outcome_profile='Outcome_Parameters/simulation_{sim_id}.csv',
+        outcome_people='Outcome_People/simulation_{sim_id}.json',
+        true_signpost='True_Signpost_Codes/simulation_{sim_id}.json',
+        test_signpost='Signpost_Codes/simulation_{sim_id}.json',
+        training_cases='Training_Set_Cases/simulation_{sim_id}.json',
+        trials = lambda wildcards: 'Trial_Tables/' + '_'.join(wildcards.sim_id.split('_')[:-1]) + '_trial_info.csv'
+    resources: mem_mb=20000
+    run:
+        import pandas as pd
+        import json
+
+        trials = pd.read_csv(input.trials, index_col='Row_Number')
+
+        print(wildcards.sim_id)
+        actual_id = '_'.join(wildcards.sim_id.split('_')[:-1])
+        trials = trials[trials['Sim_ID'] == actual_id]
+        trial = int(wildcards.sim_id.split('_')[-1])
+        trial_params = trials.iloc[trial]
+
+        total_codes = int(trial_params.loc['Total_Codes'])
+        num_people = int(trial_params.loc['Num_People'])
+
+        outcome_df = pd.read_csv(input.outcome_profile, index_col='Outcome')
+        test_code_dict = json.load(open(input.test_signpost))
+        test_people_dict = json.load(open(input.training_cases))
+
+        true_code_dict = json.load(open(input.true_signpost))
+        true_people_dict = json.load(open(input.outcome_people))
+
+        for outcome in outcome_df.index:
+            new_values = {}
+
+            true_code_file = 'True_Signpost_Codes/' + outcome + '_simulation_' + wildcards.sim_id + '.txt'
+            true_people_file = 'Outcome_People/' + outcome + '_simulation_' + wildcards.sim_id + '.txt'
+
+            true_codes = set(true_code_dict[outcome])
+            test_codes = set(test_code_dict[outcome])
+
+            new_values['Code_TP'] = len(true_codes & test_codes) # Set intersection
+            new_values['Code_FP'] = len(test_codes - true_codes) # Set difference
+            new_values['Code_FN'] = len(true_codes - test_codes) # Set difference
+            new_values['Code_TN'] = total_codes - len(true_codes | test_codes) # Set union
+
+            true_people = set(true_people_dict[outcome])
+            test_people = set(test_people_dict[outcome])
+
+            new_values['People_TP'] = len(true_people & test_people)
+            new_values['People_FP'] = len(test_people - true_people)
+            new_values['People_FN'] = len(true_people - test_people)
+            new_values['People_TN'] = num_people - len(true_people | test_people)
+
+            outcome_df.loc[outcome, new_values.keys()] = new_values
+
+        print(outcome_df)
+
+        outcome_df['Code_Sensitivity'] = outcome_df['Code_TP'] / outcome_df['Signpost_Count']
+        outcome_df['Code_Specificity'] = outcome_df['Code_TN'] / (total_codes - outcome_df['Signpost_Count'])
+        outcome_df['Code_Bal_Accuracy'] = outcome_df[['Code_Sensitivity', 'Code_Specificity']].mean(axis=1)
+
+        outcome_df['People_Sensitivity'] = outcome_df['People_TP'] / (outcome_df['People_TP'] + outcome_df['People_FN'])
+        outcome_df['People_Specificity'] = outcome_df['People_TN'] / (outcome_df['People_TN'] + outcome_df['People_FP'])
+        outcome_df['People_Bal_Accuracy'] = outcome_df[['People_Sensitivity', 'People_Specificity']].mean(axis=1)
+
+        print(outcome_df)
+        outcome_df.to_csv(output.outcome_table)
+
+def get_num_trials(wildcards):
+    import pandas as pd
+
+    df = pd.read_csv('Trial_Tables/' + wildcards.sim_id + '_trial_info.csv')
+
+    return len(df)
+
+rule benchmark_parameter:
+    output:
+        accuracy='Plots/{sim_id}/code_accuracies.png',
+        boxplot='Plots/{sim_id}/param_accuracy_boxplot.png',
+        rollup='Param_Results/{sim_id}.csv'
+    input:
+        trial_info='Trial_Tables/{sim_id}_trial_info.csv',
+        sim_results=lambda wildcards: expand('Sim_Results/simulation_{{sim_id}}_{trial}.csv', trial=list(range(get_num_trials(wildcards))))
+    resources: mem_mb = 10000
+    run:
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        sim_trials = pd.read_csv(input.trial_info, index_col='Row_Number')
+        print(sim_trials)
+
+        variable_count = sim_trials.drop(columns='Seed_Offset').apply(lambda x: len(x.unique()))
+        variable = variable_count.idxmax()
+        num_sim_trials = len(sim_trials)
+        print(variable, num_sim_trials)
+
+        all_results = []
+        for i in range(num_sim_trials):
+            try:
+                temp_results = pd.read_csv('Sim_Results/simulation_' + wildcards.sim_id + '_' + str(i) + '.csv',index_col='Outcome')
+            except FileNotFoundError:
+                continue
+            trial_params = sim_trials.iloc[i]
+            for param, value in trial_params.iteritems():
+                temp_results[param] = value
+
+            all_results.append(temp_results)
+
+        results = pd.concat(all_results)
+        print(results)
+        results.to_csv(output.rollup)
+
+        metrics = ['Accuracy', 'Sensitivity', 'Specificity']
+        column_suffixes = ['_Bal_Accuracy', '_Sensitivity', '_Specificity']
+        y_labels = ['Balanced Accuracy', 'Sensitivity (TP / ALL P)', 'Specificity (TN / ALL N)']
+
+        fig, axes = plt.subplots(nrows=1, ncols=3, sharey=False)
+        fig.set_size_inches(9, 3)
+        fig.set_facecolor('w')
+        fig.suptitle('Benchmarking the Identification of Signpost Codes for an Outcome\nColored by parameter value: ' + variable)
+
+        for i in range(3):
+            ax = axes[i]
+            ax.set_title(metrics[i])
+            scat = ax.scatter(results['Prevalence'], results['Code' + column_suffixes[i]], c=results[variable], cmap='turbo', s=10)
+            ax.set_xlabel('Simulated Outcome Prevalence')
+            ax.set_ylabel(y_labels[i])
+            if i < 2:
+                ax.set_ylim(0, 1)
+
+        plt.colorbar(scat)
+        plt.tight_layout()
+        plt.savefig(output.accuracy, dpi=120)
+
+        results[variable] = results[variable].round(4)
+        results.boxplot('Code_Bal_Accuracy', by=variable, showfliers=False)
+        plt.gcf().set_facecolor('w')
+        plt.gcf().set_size_inches(8,6)
+        plt.ylim(0, 1)
+        plt.tight_layout()
+        plt.savefig(output.boxplot, dpi=120)
+
+rule parameter_row_col_counts_rollup:
+    output:
+        row_plot='Plots/{sim_id}/row_count_boxplot.png',
+        col_plot='Plots/{sim_id}/col_count_boxplot.png'
+    input:
+        trial_info='Trial_Tables/{sim_id}_trial_info.csv',
+        sim_rows=lambda wildcards: expand('Count_Tables/simulation_rows_{{sim_id}}_{trial}.csv',trial=list(range(get_num_trials(wildcards)))),
+        sim_cols=lambda wildcards: expand('Count_Tables/simulation_cols_{{sim_id}}_{trial}.csv',trial=list(range(get_num_trials(wildcards))))
+    resources: mem_mb = 10000
+    run:
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import seaborn as sns
+
+        sim_trials = pd.read_csv(input.trial_info, index_col='Row_Number')
+        print(sim_trials)
+
+        variable_count = sim_trials.drop(columns='Seed_Offset').apply(lambda x: len(x.unique()))
+        variable = variable_count.idxmax()
+        num_sim_trials = len(sim_trials)
+        print(variable, num_sim_trials)
+
+        all_row_counts = []
+
+        for f in input.sim_rows:
+            trial = int(f.split('_')[-1].replace('.csv', ''))
+            temp = pd.read_csv(f, index_col='IID')
+            temp[variable] = sim_trials.iloc[trial].loc[variable]
+            all_row_counts.append(temp)
+
+        all_row_counts = pd.concat(all_row_counts)
+
+        all_row_counts['Non_Signpost_Codes'] = all_row_counts['All_Code_Count'] - all_row_counts['Actual_Signpost_Codes']
+        all_row_counts[variable] = all_row_counts[variable].round(4)
+
+        print(all_row_counts)
+
+        fig, axes = plt.subplots(nrows=1, ncols=3, sharey=False)
+        fig.set_facecolor('w')
+        fig.set_size_inches(12, 4)
+        # All_Code_Count,Outcome_Code_Count,Trajectory_Case_Count,Actual_Signpost_Codes,Any_Signpost_Codes,Non_Outcome_Signpost_Codes,Pure_Noise_Codes
+        print('Row Plot Part 1')
+        ax=axes[0]
+        sns.boxplot(data=all_row_counts, x=variable, y='All_Code_Count', ax=ax, hue=variable, palette='Blues', dodge=False, showfliers=False)
+        ax.set_title('Total Codes Per Person')
+        ax.set_ylabel('Code Count')
+        ax.get_legend().remove()
+
+        print('Row Plot Part 2')
+        ax=axes[1]
+        sns.boxplot(data=all_row_counts[all_row_counts['Actual_Signpost_Codes'] > 0], x=variable, y='Actual_Signpost_Codes', ax=ax, hue=variable, palette='Blues', dodge=False, showfliers=False)
+        ax.set_title('Signpost Codes Per Person\n(for people with at least one)')
+        ax.set_ylabel('Code Count')
+        # ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.2), ncol=len(all_row_counts[variable].unique()))
+        ax.get_legend().remove()
+
+        print('Row Plot Part 3')
+        ax=axes[2]
+        sns.boxplot(data=all_row_counts, x=variable, y='Non_Signpost_Codes', ax=ax, hue=variable, palette='Blues', dodge=False, showfliers=False)
+        ax.set_title('Codes Assigned as Noise Per Person')
+        ax.set_ylabel('Code Count')
+        ax.get_legend().remove()
+
+        plt.tight_layout()
+        plt.savefig(output.row_plot, dpi=120, bbox_inches='tight')
+
+        del all_row_counts
+
+        all_col_counts = []
+
+        for f in input.sim_cols:
+            trial = int(f.split('_')[-1].replace('.csv', ''))
+            temp = pd.read_csv(f, index_col='Code')
+            temp[variable] = sim_trials.iloc[trial].loc[variable]
+            temp = temp[temp['People_Count'] != sim_trials.iloc[trial].loc['Num_People']]
+            all_col_counts.append(temp)
+
+        all_col_counts = pd.concat(all_col_counts)
+        all_col_counts[variable] = all_col_counts[variable].round(4)
+
+        print(all_col_counts)
+
+        fig, axes = plt.subplots(nrows=1, ncols=3)
+        fig.set_facecolor('w')
+        fig.set_size_inches(12, 4)
+        print('Column Plot Part 1')
+        ax=axes[0]
+        sns.boxplot(data=all_col_counts, x=variable, y='Outcome_Signpost_Count', ax=ax, hue=variable, palette='Blues', dodge=False, showfliers=False)
+        ax.set_title('Number of Outcomes that a Code Signposts')
+        ax.set_ylabel('Outcome Count')
+        ax.get_legend().remove()
+
+        print('Column Plot Part 2')
+        ax=axes[1]
+        sns.boxplot(data=all_col_counts, x=variable, y='Noise_Group_Count', ax=ax, hue=variable, palette='Blues', dodge=False, showfliers=False)
+        ax.set_title('Number of Noise Groups a Code Belongs to')
+        ax.set_ylabel('Group Count')
+        # ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.2), ncol=len(all_col_counts[variable].unique()))
+        ax.get_legend().remove()
+
+        print('Column Plot Part 3')
+        ax = axes[2]
+        sns.boxplot(data=all_col_counts, x=variable, y='People_Count', ax=ax, hue=variable, palette='Blues', dodge=False, showfliers=False)
+        ax.set_title('People Per Code')
+        ax.set_ylabel('People Count')
+        ax.get_legend().remove()
+
+        plt.tight_layout()
+        plt.savefig(output.col_plot, dpi=120, bbox_inches='tight')
