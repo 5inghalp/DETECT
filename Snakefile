@@ -7,9 +7,9 @@ wildcard_constraints:
 
 rule all:
     input:
-        expand('Trajectories/trajectories_{outcome}_phecode_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['phecode_list']).read().splitlines()], dataset=[k for k, v in config['phecode_date_matrices'].items()]),
-        expand('Trajectories/trajectories_{outcome}_icd_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['icd_code_list']).read().splitlines()], dataset=[k for k, v in config['icd_date_matrices'].items()]),
-        expand('Trajectory_Times/{outcome}_icd_4dig.all_signpost_times.csv.gz', outcome=['I63.', 'I21.', 'N17.9', 'N18.9'])
+        expand('Trajectories/trajectories_I10_{outcome}_phecode_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['phecode_list']).read().splitlines()], dataset=[k for k, v in config['phecode_date_matrices'].items()]),
+        expand('Trajectories/trajectories_{index}_{outcome}_icd_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['icd_code_list']).read().splitlines()], dataset=[k for k, v in config['icd_date_matrices'].items()], index=config['index_code_list']),
+        expand('Trajectory_Times/{index}_{outcome}_icd_4dig.all_signpost_times.csv.gz', outcome=['I63.', 'I21.', 'N17.9', 'N18.9'])
 
 rule map_icd_code_sets:
     output:
