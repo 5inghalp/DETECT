@@ -7,6 +7,13 @@ Set-Up:
     - outcome code lists
     - input date matrices indicated by config file
 
+
+Input (Date of Onset) Matrix Format:
+    - .csv
+    - column names = IID, code1, code2, etc...
+    - row names = person1, person2, etc...
+    - cell values - decimal value with unit YEARS relative to some date (we used the linux epoch by default)
+
 Running:
     - in a python 3.8 environment with pandas, numpy, scipy, matplotlib, and snakemake>=7.8.3
     - for dry-run > snakemake -n {OUTPUT} # {OUTPUT} is the target file you're asking for
@@ -34,9 +41,3 @@ Aggregated Target outputs:
 
 Plotting/Detailed outputs:
     - Trajectory timing information for selected index/outcome combinations = 'Trajectory_Times/{index}_{outcome}_icd_4dig.all_signpost_times.csv.gz'
-
-Date Matrix Format:
-    - .csv
-    - column names = IID, code1, code2, etc...
-    - row names = person1, person2, etc...
-    - cell values - decimal value with unit YEARS relative to some date (we used the linux epoch by default)
