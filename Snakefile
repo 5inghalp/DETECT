@@ -64,10 +64,12 @@ rule map_phecode_sets:
 
 rule test_outcome:
     output:
-        results='RR_Tests/{outcome}_{code_type}_{dataset}.csv'
+        results='RR_Tests/{index}_{outcome}_{code_type}_{dataset}.csv'
     input:
         date_mtx=lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset],
         map='Code_Maps/{code_type}_{dataset}.json'
+    params:
+        index_code=lambda wildcards: wildcards.index
     resources: mem_mb=20000
     run:
         import json
@@ -81,7 +83,7 @@ rule test_outcome:
         print(code_map)
         outcome = 'Phe' + wildcards.outcome if wildcards.code_type == 'phecode' else wildcards.outcome
         code_list = code_map[outcome]
-        df = df[~pd.isnull(df['I10'])]
+        df = df[~pd.isnull(df[params.index_code])]
         outcome_series = df[code_list].min(axis=1)
         df = df.drop(columns=code_list)
         outcome_series.name = outcome
@@ -93,7 +95,7 @@ rule test_outcome:
         # 2D matrix of A
         cast_shape = df.transpose().shape
         print(cast_shape)
-        A_times = np.broadcast_to(df['I10'], cast_shape)
+        A_times = np.broadcast_to(df[params.index_code], cast_shape)
         non_nan_A = ~np.isnan(A_times)
         print(A_times)
         # 2D matrix of outcome/C
@@ -154,13 +156,15 @@ rule test_outcome:
 
 rule make_filtered_trajectories:
     output:
-        trajectories='Trajectories/trajectories_{outcome}_{code_type}_{dataset}.csv',
-        keep_codes='Signpost_Codes/{outcome}_{code_type}_{dataset}.txt',
-        keep_code_results='Signpost_Codes/{outcome}_{code_type}_{dataset}_results.csv'
+        trajectories='Trajectories/trajectories_{index}_{outcome}_{code_type}_{dataset}.csv',
+        keep_codes='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}.txt',
+        keep_code_results='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}_results.csv'
     input:
-        results = 'RR_Tests/{outcome}_{code_type}_{dataset}.csv',
+        results = 'RR_Tests/{index}_{outcome}_{code_type}_{dataset}.csv',
         map= 'Code_Maps/{code_type}_{dataset}.json',
         date_mtx = lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset]
+    params:
+        index_code = lambda wildcards: wildcards.index
     resources: mem_mb=20000
     run:
         import pandas as pd
@@ -181,7 +185,7 @@ rule make_filtered_trajectories:
         df[outcome] = outcome_series
 
         keep_cols = list(results.index)
-        keep_cols.append('I10')
+        keep_cols.append(params.index_code)
         print(keep_cols)
         print(df[keep_cols])
         keep_cols.append(outcome)
@@ -347,19 +351,21 @@ rule make_lab_dates:
 
 rule get_trajectory_times:
     output:
-        times='Trajectory_Times/{outcome}_{code_type}_{dataset}.all_signpost_times.csv.gz',
-        indiv_times='Trajectory_Times/{outcome}_{code_type}_{dataset}.individual_signpost_times.csv.gz',
-        signpost_freq_times='Trajectory_Times/{outcome}_{code_type}_{dataset}_sumstats_by_freq.csv',
-        signpost_RR_times='Trajectory_Times/{outcome}_{code_type}_{dataset}_sumstats_by_RR.csv',
-        pie_charts=expand('Pie_Charts/{{outcome}}_{{code_type}}_{{dataset}}_{rank}_{i}.png', i=np.arange(1, 21), rank=['Freq', 'RR']),
-        time_scatter_freq='Plots/{code_type}_{dataset}_signpost_to_{outcome}_times_by_race_Freq.png',
-        time_scatter_rr='Plots/{code_type}_{dataset}_signpost_to_{outcome}_times_by_race_RR.png'
+        times='Trajectory_Times/{index}_{outcome}_{code_type}_{dataset}.all_signpost_times.csv.gz',
+        indiv_times='Trajectory_Times/{index}_{outcome}_{code_type}_{dataset}.individual_signpost_times.csv.gz',
+        signpost_freq_times='Trajectory_Times/{index}_{outcome}_{code_type}_{dataset}_sumstats_by_freq.csv',
+        signpost_RR_times='Trajectory_Times/{index}_{outcome}_{code_type}_{dataset}_sumstats_by_RR.csv',
+        pie_charts=expand('Pie_Charts/{{index}}_{{outcome}}_{{code_type}}_{{dataset}}_{rank}_{i}.png', i=np.arange(1, 21), rank=['Freq', 'RR']),
+        time_scatter_freq='Plots/{index}_{code_type}_{dataset}_signpost_to_{outcome}_times_by_race_Freq.png',
+        time_scatter_rr='Plots/{index}_{code_type}_{dataset}_signpost_to_{outcome}_times_by_race_RR.png'
     input:
-        trajectories='Trajectories/trajectories_{outcome}_{code_type}_{dataset}.csv',
-        keep_code_results='Signpost_Codes/{outcome}_{code_type}_{dataset}_results.csv',
+        trajectories='Trajectories/trajectories_{index}_{outcome}_{code_type}_{dataset}.csv',
+        keep_code_results='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}_results.csv',
         map= 'Code_Maps/{code_type}_{dataset}.json',
         date_mtx=lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset],
-        demo='/project/ritchie02/projects/Disease_Cooccurence/Penn_EHR_Data/HTN_COHORT_DEMOGRAPHICS.csv'
+        demo=config['demographics_file']
+    params:
+        index_code=lambda wildcards: wildcards.index
     resources: mem_mb = 15000
     run:
         import pandas as pd
@@ -389,17 +395,17 @@ rule get_trajectory_times:
         print('People with outcome:', len(trajectories))
         trajectories = trajectories[trajectories['Filtered_Pre_Outcome_Code_Count'] > 1]
         print('People with outcome and one or more preceding codes:', len(trajectories))
-        trajectories = trajectories[trajectories['Filtered_Trajectory_Pre_Outcome'].str.contains('I10')]
-        print('People with I10 preceding outcome:', len(trajectories))
+        trajectories = trajectories[trajectories['Filtered_Trajectory_Pre_Outcome'].str.contains(params.index_code)]
+        print('People with ' + params.index_code + ' preceding outcome:', len(trajectories))
         date_mtx = date_mtx.loc[trajectories.index]
-        time_I10_to_outcome = date_mtx[outcome] - date_mtx['I10']
+        time_index_to_outcome = date_mtx[outcome] - date_mtx[params.index_code]
         quadrant1_ppl = trajectories.index[trajectories['Filtered_Pre_Outcome_Code_Count'] > 2]
         quadrant2_ppl = trajectories.index[trajectories['Filtered_Pre_Outcome_Code_Count'] == 2]
         print('Quadrant 1 people:', len(quadrant1_ppl))
         print('Quadrant 2 people:', len(quadrant2_ppl))
-        sumstats = pd.concat([time_I10_to_outcome.describe(), time_I10_to_outcome.loc[quadrant1_ppl].describe(), time_I10_to_outcome.loc[quadrant2_ppl].describe()], axis=1)
+        sumstats = pd.concat([time_index_to_outcome.describe(), time_index_to_outcome.loc[quadrant1_ppl].describe(), time_index_to_outcome.loc[quadrant2_ppl].describe()], axis=1)
         sumstats.columns = ['Top Row (All A->C)', 'Quadrant 1 ([A&B]->C)', 'Quadrant 2 (A->C no B)']
-        print('Summary Statistics for Time from I10 to Outcome')
+        print('Summary Statistics for Time from ' + params.index_code + ' to Outcome')
         print(sumstats)
         print(trajectories['Filtered_Trajectory_Pre_Outcome'])
         print(trajectories['Filtered_Pre_Outcome_Code_Count'])

@@ -9,3 +9,6 @@ phecode_date_matrices:
   4dig_to_phe: 'Date_Matrices/phecode.4digit_thresh15_053122.final.RR.condition_matrix.csv.gz'
   4dig_to_phe_I10check: 'Date_Matrices/phecode.4digit_thresh15_053122.final.RR.I10_check.condition_matrix.csv.gz'
 
+index_code_list: ['I10', 'E11']
+
+demographics_file: '/project/ritchie02/projects/Disease_Cooccurence/Penn_EHR_Data/HTN_COHORT_DEMOGRAPHICS.csv'
