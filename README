@@ -34,3 +34,9 @@ Aggregated Target outputs:
 
 Plotting/Detailed outputs:
     - Trajectory timing information for selected index/outcome combinations = 'Trajectory_Times/{index}_{outcome}_icd_4dig.all_signpost_times.csv.gz'
+
+Date Matrix Format:
+    - .csv
+    - column names = IID, code1, code2, etc...
+    - row names = person1, person2, etc...
+    - cell values - decimal value with unit YEARS relative to some date (we used the linux epoch by default)
