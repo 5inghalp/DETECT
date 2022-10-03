@@ -3,13 +3,14 @@ import numpy as np
 configfile: 'config_relrisk_converge.yaml'
 
 wildcard_constraints:
-    code_type='(icd|phecode)'
+    code_type='(icd|phecode)',
+    index='(' + '|'.join(config['icd_index_code_list']) + '|' + '|'.join(config['phecode_index_code_list']) + ')'
 
 rule all:
     input:
         expand('Trajectories/trajectories_I10_{outcome}_phecode_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['phecode_list']).read().splitlines()], dataset=[k for k, v in config['phecode_date_matrices'].items()]),
-        expand('Trajectories/trajectories_{index}_{outcome}_icd_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['icd_code_list']).read().splitlines()], dataset=[k for k, v in config['icd_date_matrices'].items()], index=config['index_code_list']),
-        expand('Trajectory_Times/{index}_{outcome}_icd_4dig.all_signpost_times.csv.gz', outcome=['I63.', 'I21.', 'N17.9', 'N18.9'])
+        expand('Trajectories/trajectories_{index}_{outcome}_icd_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['icd_code_list']).read().splitlines()], dataset=[k for k, v in config['icd_date_matrices'].items()], index=config['icd_index_code_list']),
+        expand('Trajectory_Times/{index}_{outcome}_icd_4dig.all_signpost_times.csv.gz', outcome=['I63.', 'I21.', 'N17.9', 'N18.9'], index=config['icd_index_code_list'])
 
 rule map_icd_code_sets:
     output:
@@ -62,12 +63,66 @@ rule map_phecode_sets:
 
         json.dump(code_map, open(output.map, 'w+'))
 
+rule map_icd_index_code_sets:
+    output:
+        map='Code_Maps/icd_index_codes_{dataset}.json'
+    input:
+        date_mtx=lambda wildcards: config['icd_date_matrices'][wildcards.dataset]
+    params:
+        index_codes=config['icd_index_code_list']
+    resources: mem_mb=20000
+    run:
+        import json
+        import pandas as pd
+
+        df_head = pd.read_csv(input.date_mtx, nrows=5, index_col='IID')
+        print(df_head)
+
+        codes = params.index_codes
+        print(codes)
+
+        col_codes = df_head.columns.to_series()
+        code_map = {}
+        for c in codes:
+            code_map[c.replace('*', '')] = list(col_codes[col_codes.str.match(c)].values)
+        print(code_map)
+
+        json.dump(code_map, open(output.map, 'w+'))
+
+rule map_phecode_index_code_sets:
+    output:
+        map='Code_Maps/phecode_index_codes_{dataset}.json'
+    input:
+        date_mtx=lambda wildcards: config['phecode_date_matrices'][wildcards.dataset]
+    params:
+        index_codes=config['phecode_index_code_list']
+    resources: mem_mb=20000
+    run:
+        import json
+        import pandas as pd
+
+        df_head = pd.read_csv(input.date_mtx, nrows=5, index_col='IID')
+        print(df_head)
+
+        codes = params.index_codes
+        codes = ['Phe' + c for c in codes]
+        print(codes)
+
+        col_codes = df_head.columns.to_series()
+        code_map = {}
+        for c in codes:
+            code_map[c.replace('*', '')] = list(col_codes[col_codes.str.match(c)].values)
+        print(code_map)
+
+        json.dump(code_map, open(output.map, 'w+'))
+
 rule test_outcome:
     output:
         results='RR_Tests/{index}_{outcome}_{code_type}_{dataset}.csv'
     input:
         date_mtx=lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset],
-        map='Code_Maps/{code_type}_{dataset}.json'
+        map='Code_Maps/{code_type}_{dataset}.json',
+        iMap='Code_Maps/{code_type}_index_codes_{dataset}.json'
     params:
         index_code=lambda wildcards: wildcards.index
     resources: mem_mb=20000
@@ -78,15 +133,24 @@ rule test_outcome:
 
         df = pd.read_csv(input.date_mtx, nrows=None, index_col='IID')
         code_map = json.load(open(input.map))
+        index_map = json.load(open(input.iMap))
 
         print(df)
         print(code_map)
+        print(index_map)
+
         outcome = 'Phe' + wildcards.outcome if wildcards.code_type == 'phecode' else wildcards.outcome
         code_list = code_map[outcome]
         df = df[~pd.isnull(df[params.index_code])]
         outcome_series = df[code_list].min(axis=1)
         df = df.drop(columns=code_list)
         outcome_series.name = outcome
+        print(df)
+
+        index_list = index_map[params.index_code]
+        index_series = df[index_list].min(axis=1)
+        df = df.drop(columns=index_list, error='ignore')
+        df[params.index_code] = index_series
         print(df)
 
         # Do testing in 2D for efficiency
@@ -162,6 +226,7 @@ rule make_filtered_trajectories:
     input:
         results = 'RR_Tests/{index}_{outcome}_{code_type}_{dataset}.csv',
         map= 'Code_Maps/{code_type}_{dataset}.json',
+        iMap='Code_Maps/{code_type}_index_codes_{dataset}.json',
         date_mtx = lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset]
     params:
         index_code = lambda wildcards: wildcards.index
@@ -178,11 +243,18 @@ rule make_filtered_trajectories:
         print(results)
 
         df = pd.read_csv(input.date_mtx, index_col='IID', nrows=None)
+
         code_map = json.load(open(input.map))
         print(code_map)
         code_list = code_map[outcome]
         outcome_series = df[code_list].min(axis=1)
         df[outcome] = outcome_series
+
+        index_map = json.load(open(input.iMap))
+        print(index_map)
+        index_list = index_map[params.index_code]
+        index_series = df[index_list].min(axis=1)
+        df[params.index_code] = index_series
 
         keep_cols = list(results.index)
         keep_cols.append(params.index_code)
@@ -362,6 +434,7 @@ rule get_trajectory_times:
         trajectories='Trajectories/trajectories_{index}_{outcome}_{code_type}_{dataset}.csv',
         keep_code_results='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}_results.csv',
         map= 'Code_Maps/{code_type}_{dataset}.json',
+        iMap='Code_Maps/{code_type}_index_codes_{dataset}.json',
         date_mtx=lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset],
         demo=config['demographics_file']
     params:
@@ -390,6 +463,12 @@ rule get_trajectory_times:
         code_list = code_map[outcome]
         outcome_series = date_mtx[code_list].min(axis=1)
         date_mtx[outcome] = outcome_series
+
+        index_map = json.load(open(input.iMap))
+        print(index_map)
+        index_list = index_map[params.index_code]
+        index_series = df[index_list].min(axis=1)
+        df[params.index_code] = index_series
 
         trajectories = trajectories.dropna(subset=['Filtered_Trajectory_Pre_Outcome'])
         print('People with outcome:', len(trajectories))
