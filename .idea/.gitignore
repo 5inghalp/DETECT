@@ -6,3 +6,10 @@
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
+
+/deployment.xml
+/DETECT.iml
+/misc.xml
+/modules.xml
+/snakemake-settings.xml
+/vcs.xml
