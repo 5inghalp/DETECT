@@ -8,7 +8,7 @@ wildcard_constraints:
 
 rule all:
     input:
-        expand('Trajectories/trajectories_I10_{outcome}_phecode_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['phecode_list']).read().splitlines()], dataset=[k for k, v in config['phecode_date_matrices'].items()]),
+        expand('Trajectories/trajectories_{index}_{outcome}_phecode_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['phecode_list']).read().splitlines()], dataset=[k for k, v in config['phecode_date_matrices'].items()], index=config['phecode_index_code_list']),
         expand('Trajectories/trajectories_{index}_{outcome}_icd_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['icd_code_list']).read().splitlines()], dataset=[k for k, v in config['icd_date_matrices'].items()], index=config['icd_index_code_list']),
         expand('Trajectory_Times/{index}_{outcome}_icd_4dig.all_signpost_times.csv.gz', outcome=['I63.', 'I21.', 'N17.9', 'N18.9'], index=config['icd_index_code_list'])
 
@@ -140,18 +140,23 @@ rule test_outcome:
         print(index_map)
 
         outcome = 'Phe' + wildcards.outcome if wildcards.code_type == 'phecode' else wildcards.outcome
+        params.index_code = 'Phe' + params.index_code if wildcards.code_type == 'phecode' else wildcards.outcome
+
         code_list = code_map[outcome]
-        df = df[~pd.isnull(df[params.index_code])]
         outcome_series = df[code_list].min(axis=1)
         df = df.drop(columns=code_list)
         outcome_series.name = outcome
-        print(df)
+        print(outcome_series)
 
         index_list = index_map[params.index_code]
         index_series = df[index_list].min(axis=1)
-        df = df.drop(columns=index_list, error='ignore')
+        df = df.drop(columns=index_list, errors='ignore')
         df[params.index_code] = index_series
-        print(df)
+        df = df[~pd.isnull(df[params.index_code])]
+        print(df[params.index_code])
+
+        outcome_series = outcome_series.loc[df.index]
+        print(outcome_series)
 
         # Do testing in 2D for efficiency
         # Rows = codes, Columns = people
@@ -197,11 +202,11 @@ rule test_outcome:
         contB_contC = CAB | CBA | CA_not_B | A_not_B_not_C
 
         results = pd.DataFrame(index=df.columns)
+
         results['caseB_caseC'] = np.count_nonzero(caseB_caseC, axis=1)
         results['contB_caseC'] = np.count_nonzero(contB_caseC, axis=1)
         results['caseB_contC'] = np.count_nonzero(caseB_contC, axis=1)
         results['contB_contC'] = np.count_nonzero(contB_contC, axis=1)
-
 
         results['numerator'] = results['caseB_caseC'] / (results['caseB_caseC'] + results['contB_caseC'])
         results['denominator'] = results['caseB_contC'] / (results['caseB_contC'] + results['contB_contC'])
@@ -214,6 +219,7 @@ rule test_outcome:
         results['sum_check'] = results[four_cols].sum(axis=1)
 
         results.index.name = 'signpost'
+        results = results.drop(index=[params.index_code], errors='ignore')
 
         print(results)
         results.to_csv(output.results)
@@ -467,8 +473,8 @@ rule get_trajectory_times:
         index_map = json.load(open(input.iMap))
         print(index_map)
         index_list = index_map[params.index_code]
-        index_series = df[index_list].min(axis=1)
-        df[params.index_code] = index_series
+        index_series = date_mtx[index_list].min(axis=1)
+        date_mtx[params.index_code] = index_series
 
         trajectories = trajectories.dropna(subset=['Filtered_Trajectory_Pre_Outcome'])
         print('People with outcome:', len(trajectories))
@@ -596,7 +602,7 @@ rule get_trajectory_times:
         # Make pie charts
         for i in range(20):
             for rank in ['Freq', 'RR']:
-                output_file = '_'.join(['Pie_Charts/' + outcome, wildcards.code_type, wildcards.dataset, rank,  str(i+1) + '.png'])
+                output_file = '_'.join(['Pie_Charts/' + str(params.index_code), outcome, wildcards.code_type, wildcards.dataset, rank,  str(i+1) + '.png'])
                 print(output_file)
                 use_df = freq_sumstats if rank == 'Freq' else rr_sumstats
                 code = use_df.index[i]
