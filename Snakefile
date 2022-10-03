@@ -140,7 +140,7 @@ rule test_outcome:
         print(index_map)
 
         outcome = 'Phe' + wildcards.outcome if wildcards.code_type == 'phecode' else wildcards.outcome
-        params.index_code = 'Phe' + params.index_code if wildcards.code_type == 'phecode' else wildcards.outcome
+        params.index_code = 'Phe' + str(params.index_code) if wildcards.code_type == 'phecode' else str(params.index_code)
 
         code_list = code_map[outcome]
         outcome_series = df[code_list].min(axis=1)
@@ -242,6 +242,7 @@ rule make_filtered_trajectories:
         import json
 
         outcome = 'Phe' + wildcards.outcome if wildcards.code_type == 'phecode' else wildcards.outcome
+        params.index_code = 'Phe' + params.index_code if wildcards.code_type == 'phecode' else params.index_code
 
         results = pd.read_csv(input.results, index_col='signpost')
         results = results[(results['RR'] > 1) | np.isinf(results['RR'])]
@@ -462,6 +463,7 @@ rule get_trajectory_times:
         print(results)
         print(date_mtx)
         outcome = 'Phe' + wildcards.outcome if wildcards.code_type == 'phecode' else wildcards.outcome
+        params.index_code = 'Phe' + params.index_code if wildcards.code_type == 'phecode' else params.index_code
 
         trajectories = pd.read_csv(input.trajectories, index_col='IID')
 
