@@ -18,7 +18,7 @@ rule all:
         'Summary/positive_phecode_tests.csv',
         'Summary/positive_icd_tests.csv,
         expand('Trajectories/trajectories_{index}_{outcome}_icd_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['icd_code_list']).read().splitlines()], dataset=[k for k, v in config['icd_date_matrices'].items()], index=config['icd_index_code_list'])),
-        'Trajectory_Times/E11_I21._icd_4dig.all_signpost_times.csv.gz'
+        'Trajectory_Times/E11_I21._icd_4dig.all_signpost_times.csv.gz' # particular interest in diabetes -> MI
 
     - to use your custom all rule > snakemake all --profile lsf
 
