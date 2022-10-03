@@ -6,12 +6,6 @@ wildcard_constraints:
     code_type='(icd|phecode)',
     index='(' + '|'.join(config['icd_index_code_list']) + '|' + '|'.join(config['phecode_index_code_list']) + ')'
 
-rule all:
-    input:
-        expand('Trajectories/trajectories_{index}_{outcome}_phecode_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['phecode_list']).read().splitlines()], dataset=[k for k, v in config['phecode_date_matrices'].items()], index=config['phecode_index_code_list']),
-        expand('Trajectories/trajectories_{index}_{outcome}_icd_{dataset}.csv', outcome=[c.replace('*', '') for c in open(config['icd_code_list']).read().splitlines()], dataset=[k for k, v in config['icd_date_matrices'].items()], index=config['icd_index_code_list']),
-        expand('Trajectory_Times/{index}_{outcome}_icd_4dig.all_signpost_times.csv.gz', outcome=['I63.', 'I21.', 'N17.9', 'N18.9'], index=config['icd_index_code_list'])
-
 rule map_icd_code_sets:
     output:
         map='Code_Maps/icd_{dataset}.json'
@@ -729,3 +723,55 @@ rule get_trajectory_times:
             plt.tight_layout()
             plt.savefig(output.time_scatter_freq if rank == 'Freq' else output.time_scatter_rr, dpi=150)
             plt.clf()
+
+rule aggregate_phecode_results:
+    output:
+        table='Summary/positive_phecode_tests.csv'
+    input:
+        rr_results=expand('RR_Tests/{index}_{outcome}_phecode_{dataset}.csv', outcome=[c.replace('*','') for c in open(config['phecode_list']).read().splitlines()], dataset=[k for k, v in config['phecode_date_matrices'].items()], index=config['phecode_index_code_list'])
+    resources: mem_mb=15000
+    run:
+        import pandas as pd
+
+        results_dfs = []
+
+        for f in input.rr_results:
+            file_parts = f.replace('RR_Tests/', '').replace('.csv', '').split('_')
+
+            temp = pd.read_csv(f)
+            temp['index'] = 'Phe' + file_parts[0]
+            temp['outcome'] = 'Phe' + file_parts[1]
+            temp['dataset'] = '_'.join(file_parts[3:]) if len(file_parts) > 4 else file_parts[3]
+
+            temp = temp[temp['RR'] > 1]
+            results_dfs.append(temp)
+
+        df = pd.concat(results_dfs)
+        print(df)
+        df.to_csv(output.table, index=False)
+
+rule aggregate_icd_results:
+    output:
+        table='Summary/positive_icd_tests.csv'
+    input:
+        rr_results=expand('RR_Tests/{index}_{outcome}_icd_{dataset}.csv', outcome=[c.replace('*','') for c in open(config['icd_code_list']).read().splitlines()], dataset=[k for k, v in config['icd_date_matrices'].items()], index=config['icd_index_code_list'])
+    resources: mem_mb=15000
+    run:
+        import pandas as pd
+
+        results_dfs = []
+
+        for f in input.rr_results:
+            file_parts = f.replace('RR_Tests/', '').replace('.csv', '').split('_')
+
+            temp = pd.read_csv(f)
+            temp['index'] = file_parts[0]
+            temp['outcome'] = file_parts[1]
+            temp['dataset'] = '_'.join(file_parts[3:]) if len(file_parts) > 4 else file_parts[3]
+
+            temp = temp[temp['RR'] > 1]
+            results_dfs.append(temp)
+
+        df = pd.concat(results_dfs)
+        print(df)
+        df.to_csv(output.table, index=False)
