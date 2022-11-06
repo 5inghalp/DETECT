@@ -428,7 +428,6 @@ rule get_trajectory_times:
         indiv_times='Trajectory_Times/{index}_{outcome}_{code_type}_{dataset}.individual_signpost_times.csv.gz',
         signpost_freq_times='Trajectory_Times/{index}_{outcome}_{code_type}_{dataset}_sumstats_by_freq.csv',
         signpost_RR_times='Trajectory_Times/{index}_{outcome}_{code_type}_{dataset}_sumstats_by_RR.csv',
-        pie_charts=expand('Pie_Charts/{{index}}_{{outcome}}_{{code_type}}_{{dataset}}_{rank}_{i}.png', i=np.arange(1, 21), rank=['Freq', 'RR']),
         time_scatter_freq='Plots/{index}_{code_type}_{dataset}_signpost_to_{outcome}_times_by_race_Freq.png',
         time_scatter_rr='Plots/{index}_{code_type}_{dataset}_signpost_to_{outcome}_times_by_race_RR.png'
     input:
@@ -443,6 +442,7 @@ rule get_trajectory_times:
     resources: mem_mb = 15000
     run:
         import pandas as pd
+        import subprocess as sub
         import numpy as np
         import json
         import sys
@@ -567,7 +567,7 @@ rule get_trajectory_times:
 
         rr_codes = []
         test_index = 0
-        while len(rr_codes) < 20:
+        while len(rr_codes) < 20 and test_index < len(signpost_to_outcome_sumstats):
             test_code = signpost_to_outcome_sumstats.index[test_index]
             skip = False
             if test_code == 'I69.3':
@@ -601,6 +601,8 @@ rule get_trajectory_times:
                 output_file = '_'.join(['Pie_Charts/' + str(params.index_code), outcome, wildcards.code_type, wildcards.dataset, rank,  str(i+1) + '.png'])
                 print(output_file)
                 use_df = freq_sumstats if rank == 'Freq' else rr_sumstats
+                if i > (len(use_df) - 1):
+                    continue
                 code = use_df.index[i]
                 code_demo = demo.loc[date_mtx[code].dropna().index]
                 race_counts = code_demo['race_source_value'].value_counts()
@@ -676,6 +678,7 @@ rule get_trajectory_times:
         # Make time scatter plots
         for rank in ['Freq', 'RR']:
             test = freq_sumstats if rank == 'Freq' else rr_sumstats
+
             test = test.sort_values(by='mean', ascending=False).copy()
             test = test.rename(index=code_remap)
 
@@ -683,16 +686,18 @@ rule get_trajectory_times:
 
             cmap = plt.cm.get_cmap('viridis',5)
 
-            plt.scatter(np.arange(20),test['mean'],s=test['count'],label='All', color=cmap(4))
-            plt.scatter(np.arange(20),test['W-Mean'],s=test['W-Count'],label='White', color=cmap(3))
-            plt.scatter(np.arange(20),test['B-Mean'],s=test['B-Count'],label='Black', color=cmap(2))
-            plt.scatter(np.arange(20),test['A-Mean'],s=test['A-Count'],label='Asian', color=cmap(1))
-            plt.scatter(np.arange(20),test['O-Mean'],s=test['O-Count'],label='Other', c='mediumpurple')
+            use_len = len(test)
+
+            plt.scatter(np.arange(use_len),test['mean'],s=test['count'],label='All', color=cmap(4))
+            plt.scatter(np.arange(use_len),test['W-Mean'],s=test['W-Count'],label='White', color=cmap(3))
+            plt.scatter(np.arange(use_len),test['B-Mean'],s=test['B-Count'],label='Black', color=cmap(2))
+            plt.scatter(np.arange(use_len),test['A-Mean'],s=test['A-Count'],label='Asian', color=cmap(1))
+            plt.scatter(np.arange(use_len),test['O-Mean'],s=test['O-Count'],label='Other', c='mediumpurple')
             plt.gca().set_facecolor('silver')
-            plt.xticks(np.arange(20), labels=test.index, rotation=30, ha='right')
+            plt.xticks(np.arange(use_len), labels=test.index, rotation=30, ha='right')
             plt.ylim(0, 9)
 
-            for i in range(20):
+            for i in range(use_len):
                 plt.axvline(x=i,c='w',zorder=-10)
 
             plt.legend()
@@ -703,8 +708,6 @@ rule get_trajectory_times:
 
             handles.append(copy(handles[0]))
             handles.append(copy(handles[0]))
-
-            print(handles)
 
             for h in handles[-2:]:
                 h.set_color('k')
@@ -721,7 +724,14 @@ rule get_trajectory_times:
             plt.title(None)
 
             plt.tight_layout()
-            plt.savefig(output.time_scatter_freq if rank == 'Freq' else output.time_scatter_rr, dpi=150)
+            save_file = output.time_scatter_freq if rank == 'Freq' else output.time_scatter_rr
+            print(save_file)
+            print(test)
+
+            if len(test) == 0:
+                sub.run('touch ' + save_file)
+
+            plt.savefig(save_file, dpi=150)
             plt.clf()
 
 rule aggregate_phecode_results:
