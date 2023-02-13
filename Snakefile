@@ -449,6 +449,11 @@ rule get_trajectory_times:
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
         from copy import copy
+        import sys
+        import os
+
+        os.makedirs('Pie_Charts', exist_ok=True)
+        os.makedirs('Plots', exist_ok=True)
 
         results = pd.read_csv(input.keep_code_results)
         results = results[results['signpost'] != 'IMO00']
@@ -474,6 +479,9 @@ rule get_trajectory_times:
 
         trajectories = trajectories.dropna(subset=['Filtered_Trajectory_Pre_Outcome'])
         print('People with outcome:', len(trajectories))
+        if len(trajectories) == 0:
+            sys.exit("This outcome has zero people. Please remove it from your list of outcomes")
+
         trajectories = trajectories[trajectories['Filtered_Pre_Outcome_Code_Count'] > 1]
         print('People with outcome and one or more preceding codes:', len(trajectories))
         trajectories = trajectories[trajectories['Filtered_Trajectory_Pre_Outcome'].str.contains(params.index_code)]
@@ -729,10 +737,10 @@ rule get_trajectory_times:
             print(test)
 
             if len(test) == 0:
-                sub.run('touch ' + save_file)
-
-            plt.savefig(save_file, dpi=150)
-            plt.clf()
+                sub.run('touch ' + save_file, shell=True)
+            else:
+                plt.savefig(save_file, dpi=150)
+                plt.clf()
 
 rule aggregate_phecode_results:
     output:
