@@ -112,7 +112,9 @@ rule map_phecode_index_code_sets:
 
 rule test_outcome:
     output:
-        results='RR_Tests/{index}_{outcome}_{code_type}_{dataset}.csv'
+        results='RR_Tests/{index}_{outcome}_{code_type}_{dataset}.csv',
+        keep_codes='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}.txt',
+        keep_code_results='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}_results.csv'
     input:
         date_mtx=lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset],
         map='Code_Maps/{code_type}_{dataset}.json',
@@ -218,13 +220,16 @@ rule test_outcome:
         print(results)
         results.to_csv(output.results)
 
+        results = results[(results['RR'] > 1) | np.isinf(results['RR'])]
+        results = results[(results['P'] <= 0.05) | np.isinf(results['RR'])]
+        open(output.keep_codes, 'w+').write('\n'.join(results.index) + '\n')
+        results.to_csv(output.keep_code_results)
+
 rule make_filtered_trajectories:
     output:
-        trajectories='Trajectories/trajectories_{index}_{outcome}_{code_type}_{dataset}.csv',
-        keep_codes='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}.txt',
-        keep_code_results='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}_results.csv'
+        trajectories='Trajectories/trajectories_{index}_{outcome}_{code_type}_{dataset}.csv'
     input:
-        results = 'RR_Tests/{index}_{outcome}_{code_type}_{dataset}.csv',
+        results = 'Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}_results.csv',
         map= 'Code_Maps/{code_type}_{dataset}.json',
         iMap='Code_Maps/{code_type}_index_codes_{dataset}.json',
         date_mtx = lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset]
@@ -239,8 +244,6 @@ rule make_filtered_trajectories:
         params.index_code = 'Phe' + params.index_code if wildcards.code_type == 'phecode' else params.index_code
 
         results = pd.read_csv(input.results, index_col='signpost')
-        results = results[(results['RR'] > 1) | np.isinf(results['RR'])]
-        results = results[(results['P'] <= 0.05) | np.isinf(results['RR'])]
         print(results)
 
         df = pd.read_csv(input.date_mtx, index_col='IID', nrows=None)
@@ -250,12 +253,14 @@ rule make_filtered_trajectories:
         code_list = code_map[outcome]
         outcome_series = df[code_list].min(axis=1)
         df[outcome] = outcome_series
+        df = df.drop(columns=[c for c in code_list if c != outcome])
 
         index_map = json.load(open(input.iMap))
         print(index_map)
         index_list = index_map[params.index_code]
         index_series = df[index_list].min(axis=1)
         df[params.index_code] = index_series
+        df = df.drop(columns=[c for c in index_list if c != params.index_code])
 
         keep_cols = list(results.index)
         keep_cols.append(params.index_code)
@@ -288,9 +293,6 @@ rule make_filtered_trajectories:
         all_trajectories['Full_Code_Count'] = df.count(axis=1)
 
         print(all_trajectories)
-
-        open(output.keep_codes, 'w+').write('\n'.join(results.index) + '\n')
-        results.to_csv(output.keep_code_results)
         all_trajectories.to_csv(output.trajectories)
 
 rule compute_data_span:

@@ -4,7 +4,8 @@ configfile: 'config_relrisk_converge.yaml'
 
 wildcard_constraints:
     code_type='(icd|phecode)',
-    index='(' + '|'.join(config['icd_index_code_list']) + '|' + '|'.join(config['phecode_index_code_list']) + ')'
+    index='(' + '|'.join(config['icd_index_code_list']) + '|' + '|'.join(config['phecode_index_code_list']) + ')',
+    outcome='(' + '|'.join(open('icd_outcome_codes.txt').read().splitlines()) + '|' + '|'.join(open('phecode_outcome_codes.txt').read().splitlines()) + ')'
 
 rule map_icd_code_sets:
     output:
@@ -110,13 +111,114 @@ rule map_phecode_index_code_sets:
 
         json.dump(code_map, open(output.map, 'w+'))
 
+rule get_propensity_scores:
+    output:
+        results='Propensity_Matching/{index}_{outcome}_{code_type}_{dataset}.csv'
+    input:
+        date_mtx= lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset],
+        map='Code_Maps/{code_type}_{dataset}.json',
+        iMap='Code_Maps/{code_type}_index_codes_{dataset}.json',
+        demo=config['demographics_file']
+    params:
+        index_code = lambda wildcards: wildcards.index
+    resources: mem_mb=20000
+    run:
+        import pandas as pd
+        import numpy as np
+        from sklearn.linear_model import LogisticRegression
+        from datetime import datetime
+
+        date_mtx = pd.read_csv(input.date_mtx, index_col='IID')
+        print(date_mtx)
+
+        code_map = json.load(open(input.map))
+        index_map = json.load(open(input.iMap))
+
+        outcome = 'Phe' + wildcards.outcome if wildcards.code_type == 'phecode' else wildcards.outcome
+        params.index_code = 'Phe' + str(params.index_code) if wildcards.code_type == 'phecode' else str(params.index_code)
+
+        code_list = code_map[outcome]
+        outcome_series = date_mtx[code_list].min(axis=1)
+        date_mtx = date_mtx.drop(columns=code_list)
+        outcome_series.name = outcome
+
+        index_list = index_map[params.index_code]
+        index_series = date_mtx[index_list].min(axis=1)
+        date_mtx = date_mtx.drop(columns=index_list, errors='ignore')
+        date_mtx[params.index_code] = index_series
+        date_mtx = date_mtx[~pd.isnull(date_mtx[params.index_code])]
+
+        outcome_series = outcome_series.loc[date_mtx.index]
+
+        outcome_series = outcome_series[outcome_series.index.isin(index_series.index)]
+        index_series = index_series.loc[outcome_series.index]
+
+        outcome_cc = (~pd.isnull(outcome_series)).astype(int)
+        outcome_cc = outcome_cc.astype(bool) & (outcome_series > index_series)
+        outcome_cc = outcome_cc.astype(int)
+        print(outcome_cc.value_counts())
+
+        demo = pd.read_csv(input.demo, index_col=0, parse_dates=['birth_date_shift'])
+        demo['index_age'] = index_series - (demo['birth_date_shift'] - datetime(1970,1,1)).apply(lambda x: x.days / 365.25)
+        demo['is_female'] = demo['gender_source_value'].replace({'Male': 0, 'Female': 1})
+
+        print(demo)
+
+        X = demo[['is_female', 'index_age']].copy()
+        y = outcome_cc.copy().astype(int)
+
+        samples = X.index.intersection(y.index)
+
+        X = X.loc[samples]
+        y = y.loc[samples]
+
+        logit = LogisticRegression(class_weight='balanced')
+
+        logit.fit(X,y)
+
+        probs = pd.DataFrame(logit.predict_proba(X),index=samples,columns=[0, 1])
+        probs['y'] = y
+        probs['bin'] = pd.cut(probs[1],bins=np.quantile(probs[1],np.arange(0,1.01,0.01)))
+
+        min_multiple = 100
+        for bin, subDF in probs.groupby('bin'):
+            if subDF['y'].max() == 0:
+                continue
+            counts = subDF['y'].value_counts()
+            multiple = int(counts[0] / counts[1])
+            min_multiple = multiple if multiple < min_multiple else min_multiple
+
+        keep_dfs = []
+
+        for bin, subDF in probs.groupby('bin'):
+            if subDF['y'].max() == 0:
+                continue
+            cases = subDF[subDF['y'] == 1]
+            controls = subDF[subDF['y'] == 0].sample(len(cases) * min_multiple,random_state=314159)
+            keep_dfs.append(cases)
+            keep_dfs.append(controls)
+
+        new_probs = pd.concat(keep_dfs)
+        probs['matched_cohort'] = probs.index.isin(new_probs.index).astype(int)
+        probs = probs.rename(columns={1: 'score'})
+        probs = probs.drop(columns=[0])
+        probs.index.name = 'IID'
+
+        print(probs)
+        print(min_multiple)
+
+        probs[['score', 'y', 'matched_cohort']].to_csv(output.results)
+
 rule test_outcome:
     output:
-        results='RR_Tests/{index}_{outcome}_{code_type}_{dataset}.csv'
+        results='RR_Tests/{index}_{outcome}_{code_type}_{dataset}.csv',
+        keep_codes='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}.txt',
+        keep_code_results='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}_results.csv'
     input:
         date_mtx=lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset],
         map='Code_Maps/{code_type}_{dataset}.json',
-        iMap='Code_Maps/{code_type}_index_codes_{dataset}.json'
+        iMap='Code_Maps/{code_type}_index_codes_{dataset}.json',
+        psm_results='Propensity_Matching/{index}_{outcome}_{code_type}_{dataset}.csv'
     params:
         index_code=lambda wildcards: wildcards.index
     resources: mem_mb=20000
@@ -128,6 +230,10 @@ rule test_outcome:
         df = pd.read_csv(input.date_mtx, nrows=None, index_col='IID')
         code_map = json.load(open(input.map))
         index_map = json.load(open(input.iMap))
+        psm = pd.read_csv(input.psm_results, nrows=None, index_col='IID')
+
+        psm = psm[psm['matched_cohort'].astype(bool)]
+        df = df.loc[psm.index]
 
         print(df)
         print(code_map)
@@ -218,15 +324,18 @@ rule test_outcome:
         print(results)
         results.to_csv(output.results)
 
+        results = results[(results['RR'] > 1) | np.isinf(results['RR'])]
+        results = results[(results['P'] <= 0.05) | np.isinf(results['RR'])]
+        open(output.keep_codes, 'w+').write('\n'.join(results.index) + '\n')
+        results.to_csv(output.keep_code_results)
+
 rule make_filtered_trajectories:
     output:
-        trajectories='Trajectories/trajectories_{index}_{outcome}_{code_type}_{dataset}.csv',
-        keep_codes='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}.txt',
-        keep_code_results='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}_results.csv'
+        trajectories='Trajectories/trajectories_{index}_{outcome}_{code_type}_{dataset}.csv'
     input:
-        results = 'RR_Tests/{index}_{outcome}_{code_type}_{dataset}.csv',
         map= 'Code_Maps/{code_type}_{dataset}.json',
         iMap='Code_Maps/{code_type}_index_codes_{dataset}.json',
+        keep_code_results='Signpost_Codes/{index}_{outcome}_{code_type}_{dataset}_results.csv',
         date_mtx = lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset]
     params:
         index_code = lambda wildcards: wildcards.index
@@ -238,9 +347,7 @@ rule make_filtered_trajectories:
         outcome = 'Phe' + wildcards.outcome if wildcards.code_type == 'phecode' else wildcards.outcome
         params.index_code = 'Phe' + params.index_code if wildcards.code_type == 'phecode' else params.index_code
 
-        results = pd.read_csv(input.results, index_col='signpost')
-        results = results[(results['RR'] > 1) | np.isinf(results['RR'])]
-        results = results[(results['P'] <= 0.05) | np.isinf(results['RR'])]
+        results = pd.read_csv(input.keep_code_results, index_col='signpost')
         print(results)
 
         df = pd.read_csv(input.date_mtx, index_col='IID', nrows=None)
@@ -250,12 +357,14 @@ rule make_filtered_trajectories:
         code_list = code_map[outcome]
         outcome_series = df[code_list].min(axis=1)
         df[outcome] = outcome_series
+        df = df.drop(columns=[c for c in code_list if c != outcome])
 
         index_map = json.load(open(input.iMap))
         print(index_map)
         index_list = index_map[params.index_code]
         index_series = df[index_list].min(axis=1)
         df[params.index_code] = index_series
+        df = df.drop(columns=[c for c in index_list if c != params.index_code])
 
         keep_cols = list(results.index)
         keep_cols.append(params.index_code)
@@ -288,9 +397,6 @@ rule make_filtered_trajectories:
         all_trajectories['Full_Code_Count'] = df.count(axis=1)
 
         print(all_trajectories)
-
-        open(output.keep_codes, 'w+').write('\n'.join(results.index) + '\n')
-        results.to_csv(output.keep_code_results)
         all_trajectories.to_csv(output.trajectories)
 
 rule compute_data_span:
@@ -323,104 +429,6 @@ rule compute_data_span:
         plt.savefig(output.info_plot,dpi=120,bbox_inches='tight')
 
         data_span_info.to_csv(output.info)
-
-rule make_lab_dates:
-    output:
-        minmax='Lab_Processing/min_max_date_values_{lab}.csv',
-        long_table='Lab_Processing/date_values_long_{lab}.csv'
-    input:
-        labs='Lab_Data/{lab}.csv',
-        date_mtx='Date_Matrices/4digit_thresh15_053122.final.RR.condition_matrix.csv.gz'
-    resources: mem_mb=20000
-    run:
-        import pandas as pd
-        pd.options.mode.chained_assignment = None
-        import numpy as np
-        import matplotlib.pyplot as plt
-        from datetime import datetime
-
-        df = pd.read_csv(input.labs, parse_dates=['ORDER_DATE_SHIFT', 'RESULT_DATE_SHIFT'])
-        print(df)
-        print(df.columns)
-        print(df['ABNORMAL'])
-        print(df['ABNORMAL'].value_counts())
-        print(df['ORDER_DATE_SHIFT'])
-        print(df['RESULT_DATE_SHIFT'])
-        print(df['RESULT_DATE_SHIFT'].count())
-        df['RESULT_DATE_SHIFT'] = pd.to_datetime(df['RESULT_DATE_SHIFT'], errors='coerce')
-        print(df)
-
-        print(df['person_id'].value_counts())
-
-        abnormal_df = df.dropna(subset='ABNORMAL')
-        abnormal_df['DATE_VAL'] = (abnormal_df['RESULT_DATE_SHIFT'] - datetime(1970, 1, 1)).apply(lambda x: x.days / 365.25)
-        print(abnormal_df)
-
-        dm = pd.read_csv(input.date_mtx, nrows=None, index_col='IID')
-
-        data_span_info = pd.concat([dm.min(axis=1), dm.max(axis=1)], axis=1)
-        print(data_span_info)
-        data_span_info.columns = ['Earliest', 'Latest']
-        data_span_info['Years_of_Data'] = data_span_info['Latest'] - data_span_info['Earliest']
-        print(data_span_info)
-        print(data_span_info['Years_of_Data'].describe())
-
-        lab_people = dm[dm.index.isin(abnormal_df['person_id'])]
-        abnormal_df = abnormal_df[abnormal_df['person_id'].isin(lab_people.index)]
-
-        abnormal_df['After_First_ICD'] = abnormal_df['DATE_VAL'] >= (data_span_info.loc[abnormal_df['person_id'], 'Earliest'].values - 0.5)
-        abnormal_df['Before_Last_ICD'] = abnormal_df['DATE_VAL'] <= (data_span_info.loc[abnormal_df['person_id'], 'Latest'].values + 0.5)
-        abnormal_df['Within_ALL_ICD'] = abnormal_df['After_First_ICD'] & abnormal_df['Before_Last_ICD']
-        abnormal_df = abnormal_df.sort_values(by='DATE_VAL')
-        print(abnormal_df)
-
-        new_lab_tables = []
-
-        for person, row in lab_people.iterrows():
-            row = row.dropna()
-            person_labs = abnormal_df[abnormal_df['person_id'] == person].copy()
-            person_min, person_max = data_span_info.loc[person, 'Earliest'], data_span_info.loc[person, 'Latest']
-
-            mtx_dim = (len(person_labs), len(row))
-
-            codes_as_cols = np.broadcast_to(row.values,mtx_dim)
-
-            labs_as_rows = np.broadcast_to(person_labs['DATE_VAL'].values, reversed(mtx_dim)).T
-
-            codes_as_cols_minus6 = codes_as_cols - 0.5
-            codes_as_cols_plus6 = codes_as_cols + 0.5
-
-            after_start_window = labs_as_rows >= codes_as_cols_minus6
-            before_end_window = labs_as_rows <= codes_as_cols_plus6
-            within_window = before_end_window & after_start_window
-
-            person_labs['Close_to_any_ICD'] = np.any(within_window, axis=1)
-            person_labs['Close_to_other_abnormal'] = False
-            first_to_penultimate = person_labs['DATE_VAL'].iloc[:-1].values
-            second_to_end = person_labs['DATE_VAL'].iloc[1:].values
-            second_to_penultimate = person_labs['DATE_VAL'].iloc[1:-1].values
-            third_to_end = person_labs['DATE_VAL'].iloc[2:].values
-            person_labs['Close_to_other_abnormal'].iloc[:-1] |= (second_to_end - first_to_penultimate) <= 1
-            person_labs['Close_to_other_abnormal'].iloc[1:] |= (second_to_end - first_to_penultimate) <= 1
-
-            new_lab_tables.append(person_labs)
-
-        new_labs = pd.concat(new_lab_tables)
-        print(new_labs)
-
-        new_labs = new_labs[new_labs['Close_to_any_ICD']]
-        new_labs = new_labs[new_labs['Close_to_other_abnormal']]
-
-        print(new_labs)
-
-        person_dates = pd.concat([new_labs.drop_duplicates(subset=['person_id'], keep='first').set_index('person_id')['DATE_VAL'], new_labs.drop_duplicates(subset=['person_id'], keep='last').set_index('person_id')['DATE_VAL']], axis=1)
-        person_dates.columns = [wildcards.lab + '_FIRST', wildcards.lab + '_LAST']
-        person_dates.index.name = 'IID'
-        print(person_dates)
-
-        person_dates.to_csv(output.minmax)
-
-        new_labs.to_csv(output.long_table, index=False)
 
 rule get_trajectory_times:
     output:
