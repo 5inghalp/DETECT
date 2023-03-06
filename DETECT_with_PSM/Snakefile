@@ -430,6 +430,34 @@ rule compute_data_span:
 
         data_span_info.to_csv(output.info)
 
+
+def map_icd_codes_to_descriptions(code_list, map_file):
+    import pandas as pd
+
+    code_map = pd.read_csv(map_file, sep=' ', names=['CODE', 'DESCRIPTION'], index_col='CODE')['DESCRIPTION']
+
+    descriptions = pd.Series(index=code_list, dtype=str)
+
+    good_codes = code_map.index.intersection(code_list)
+    descriptions.loc[good_codes] = code_map.loc[good_codes]
+
+    bad_codes = descriptions.index[pd.isna(descriptions)]
+
+    for code in bad_codes:
+        code_match_bool = code_map.index.to_series().str.match(code)
+        matching_codes = code_map.index[code_match_bool]
+        if len(matching_codes) == 0:
+            continue
+        pick_code = matching_codes[0]
+        descriptions.loc[code] = code_map.loc[pick_code]
+
+    descriptions.name = 'DESCRIPTION'
+    print('')
+    print(descriptions)
+    print(descriptions.count())
+
+    return descriptions
+
 rule get_trajectory_times:
     output:
         times='Trajectory_Times/{index}_{outcome}_{code_type}_{dataset}.all_signpost_times.csv.gz',
@@ -444,7 +472,8 @@ rule get_trajectory_times:
         map= 'Code_Maps/{code_type}_{dataset}.json',
         iMap='Code_Maps/{code_type}_index_codes_{dataset}.json',
         date_mtx=lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset],
-        demo=config['demographics_file']
+        demo=config['demographics_file'],
+        icd_map=config['icd_map_file']
     params:
         index_code=lambda wildcards: wildcards.index
     resources: mem_mb = 15000
@@ -574,7 +603,6 @@ rule get_trajectory_times:
         print(signpost_to_outcome_sumstats.index[:20])
         print(freq_codes)
 
-
         freq_sumstats = signpost_to_outcome_sumstats.loc[freq_codes]
         print(freq_sumstats)
         freq_sumstats.to_csv(output.signpost_freq_times)
@@ -629,67 +657,12 @@ rule get_trajectory_times:
                 plt.savefig(output_file, dpi=150)
                 plt.clf()
 
-        code_remap = {'E11.9': 'T2D',
-                      'N52.9': 'ED',
-                      'M10.9': 'Gout',
-                      'E78.5': 'Hyperlipidemia',
-                      'J44.9': 'COPD',
-                      'H26.9': 'Cataract',
-                      'E87.5': 'Hyperkalemia',
-                      'I20.9': 'Angina Pectoris',
-                      'I48.9': 'A-Fib',
-                      'I65.2': 'Carotid Occ\'n',
-                      'I73.9': 'Vascular Disease',
-                      'I25.1': 'Atherosclerosis',
-                      'G62.9': 'Polyneuropathy',
-                      'N18.3': 'CKD, Stage 3',
-                      'I50.9': 'Heart Failure',
-                      'R06.0': 'Dyspnea',
-                      'R07.9': 'Chest Pain',
-                      'R29.8': 'Other Physical Symptoms',
-                      'I63.9': 'Stroke',
-                      'N17.9': 'Acute Renal Failure',
-                      'K21.9': 'Acid Reflux',
-                      'N39.0': 'UTI',
-                      'R60.9': 'Edema',
-                      'D64.9': 'Anemia',
-                      'M54.9': 'Dorsalgia',
-                      'E87.6': 'Hypokalemia',
-                      'H40.0': 'Glaucoma',
-                      'H90.3': 'Hearing Loss',
-                      'R42': 'Dizziness',
-                      'K59.0': 'Constipation',
-                      'R63.4': 'Weight Loss',
-                      'H25.1': 'Nuclear Cataract',
-                      'R55': 'Syncope and Collapse',
-                      'G45.9': 'TIA',
-                      'A08.2': 'Intestinal Infection',
-                      'N25.9': 'Renal Tube Dysfunction',
-                      'E16.8': 'Pancreatic Disorder',
-                      'G70.0': 'Myasthenia Gravis',
-                      'E11.3': 'T2D',
-                      'N18.5': 'CKD, Stage 5',
-                      'I35.9': 'Aortic Valve Disorder',
-                      'I25.2': 'Myocardial Infarction',
-                      'J44.1': 'COPD',
-                      'L08.9': 'Subcutaneous Infection',
-                      'I42.9': 'Cardiomyopathy',
-                      'I20.0': 'Angina',
-                      'M15.9': 'Polyosteoarthritis',
-                      'E10.9': 'T1D',
-                      'I67.8': 'Cerebrovascular Disease',
-                      'H40.1': 'Open-Angle Glaucoma',
-                      'R32': 'Incontinence',
-                      'I70.2': 'Atherosclerosis',
-                      'E16.2': 'Hypoglycemia',
-                      'G40.9': 'Epilepsy',
-                      'R56.9': 'Convulsions',
-                      'R26.9': 'Abnormalities of Gait',
-                      'F03.9': 'Dementia',
-                      'H53.4': 'Visual Field Defects',
-                      'R41.8': 'Cognitive Abnormality',
-                      'R53.1': 'Abnormal Lab Findings',
-                      'I69.3': 'Sequelae of Cerebral Infarction'}
+        code_remap = map_icd_codes_to_descriptions(signpost_codes, input.icd_map)
+        print(code_remap)
+        code_remap = code_remap.str.replace('_', ' ')
+        code_remap = code_remap.str.replace(', unspecified', '')
+        print(code_remap)
+        code_remap = code_remap.to_dict()
 
         # Make time scatter plots
         for rank in ['Freq', 'RR']:
@@ -801,3 +774,67 @@ rule aggregate_icd_results:
         df = pd.concat(results_dfs)
         print(df)
         df.to_csv(output.table, index=False)
+
+
+
+old_code_remap = {'E11.9': 'T2D',
+                      'N52.9': 'ED',
+                      'M10.9': 'Gout',
+                      'E78.5': 'Hyperlipidemia',
+                      'J44.9': 'COPD',
+                      'H26.9': 'Cataract',
+                      'E87.5': 'Hyperkalemia',
+                      'I20.9': 'Angina Pectoris',
+                      'I48.9': 'A-Fib',
+                      'I65.2': 'Carotid Occ\'n',
+                      'I73.9': 'Vascular Disease',
+                      'I25.1': 'Atherosclerosis',
+                      'G62.9': 'Polyneuropathy',
+                      'N18.3': 'CKD, Stage 3',
+                      'I50.9': 'Heart Failure',
+                      'R06.0': 'Dyspnea',
+                      'R07.9': 'Chest Pain',
+                      'R29.8': 'Other Physical Symptoms',
+                      'I63.9': 'Stroke',
+                      'N17.9': 'Acute Renal Failure',
+                      'K21.9': 'Acid Reflux',
+                      'N39.0': 'UTI',
+                      'R60.9': 'Edema',
+                      'D64.9': 'Anemia',
+                      'M54.9': 'Dorsalgia',
+                      'E87.6': 'Hypokalemia',
+                      'H40.0': 'Glaucoma',
+                      'H90.3': 'Hearing Loss',
+                      'R42': 'Dizziness',
+                      'K59.0': 'Constipation',
+                      'R63.4': 'Weight Loss',
+                      'H25.1': 'Nuclear Cataract',
+                      'R55': 'Syncope and Collapse',
+                      'G45.9': 'TIA',
+                      'A08.2': 'Intestinal Infection',
+                      'N25.9': 'Renal Tube Dysfunction',
+                      'E16.8': 'Pancreatic Disorder',
+                      'G70.0': 'Myasthenia Gravis',
+                      'E11.3': 'T2D',
+                      'N18.5': 'CKD, Stage 5',
+                      'I35.9': 'Aortic Valve Disorder',
+                      'I25.2': 'Myocardial Infarction',
+                      'J44.1': 'COPD',
+                      'L08.9': 'Subcutaneous Infection',
+                      'I42.9': 'Cardiomyopathy',
+                      'I20.0': 'Angina',
+                      'M15.9': 'Polyosteoarthritis',
+                      'E10.9': 'T1D',
+                      'I67.8': 'Cerebrovascular Disease',
+                      'H40.1': 'Open-Angle Glaucoma',
+                      'R32': 'Incontinence',
+                      'I70.2': 'Atherosclerosis',
+                      'E16.2': 'Hypoglycemia',
+                      'G40.9': 'Epilepsy',
+                      'R56.9': 'Convulsions',
+                      'R26.9': 'Abnormalities of Gait',
+                      'F03.9': 'Dementia',
+                      'H53.4': 'Visual Field Defects',
+                      'R41.8': 'Cognitive Abnormality',
+                      'R53.1': 'Abnormal Lab Findings',
+                      'I69.3': 'Sequelae of Cerebral Infarction'}

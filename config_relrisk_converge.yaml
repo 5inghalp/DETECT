@@ -13,3 +13,4 @@ icd_index_code_list: ['I10', 'E11.9']
 phecode_index_code_list: ['250.2']
 
 demographics_file: '/project/ritchie02/projects/Disease_Cooccurence/Penn_EHR_Data/HTN_COHORT_DEMOGRAPHICS.csv'
+icd_map_file: '/project/ritchie08/personal/pankhuri_lpc/DETECT/dissertation_analysis/ICD10_CMS.txt'
