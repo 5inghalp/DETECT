@@ -458,6 +458,32 @@ def map_icd_codes_to_descriptions(code_list, map_file):
 
     return descriptions
 
+def rename_icd_mappings(code_descriptions):
+
+    # Deal with unspecified
+    code_descriptions = code_descriptions.str.replace(',_unspecified', ', uns')
+
+    # Some disease-specific abbreviations
+    code_descriptions = code_descriptions.str.replace('Type_2_diabetes_mellitus', 'T2D')
+    code_descriptions = code_descriptions.str.replace('Type_1_diabetes_mellitus', 'T1D')
+    code_descriptions = code_descriptions.str.replace('Chronic_kidney_disease,_', 'CKD_')
+    code_descriptions = code_descriptions.str.replace('Gastro-esophageal_reflux_disease', 'GERD')
+    code_descriptions = code_descriptions.str.replace('with', 'w/')
+    code_descriptions = code_descriptions.str.replace('without', 'w/o')
+    code_descriptions = code_descriptions.str.replace('w/out', 'w/o')
+    code_descriptions = code_descriptions.str.replace('Unspecified_', '')
+
+    # Remove anything after the first comma
+    save_name = code_descriptions.name
+    code_descriptions = code_descriptions.str.split(',', expand=True)[0]
+    code_descriptions.name = save_name
+
+    # Last, replace underscores with spaces
+    code_descriptions = code_descriptions.str.replace('_',' ')
+    code_descriptions = code_descriptions.str.title()
+
+    return code_descriptions
+
 rule get_trajectory_times:
     output:
         times='Trajectory_Times/{index}_{outcome}_{code_type}_{dataset}.all_signpost_times.csv.gz',
@@ -658,10 +684,11 @@ rule get_trajectory_times:
                 plt.clf()
 
         code_remap = map_icd_codes_to_descriptions(signpost_codes, input.icd_map)
+
         print(code_remap)
-        code_remap = code_remap.str.replace('_', ' ')
-        code_remap = code_remap.str.replace(', unspecified', '')
+        code_remap = rename_icd_mappings(code_remap)
         print(code_remap)
+
         code_remap = code_remap.to_dict()
 
         # Make time scatter plots
