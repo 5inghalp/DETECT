@@ -121,7 +121,7 @@ rule test_outcome:
         iMap='Code_Maps/{code_type}_index_codes_{dataset}.json'
     params:
         index_code=lambda wildcards: wildcards.index
-    resources: mem_mb=20000
+    resources: mem_mb=30000
     run:
         import json
         import pandas as pd
@@ -235,7 +235,7 @@ rule make_filtered_trajectories:
         date_mtx = lambda wildcards: config[wildcards.code_type + '_date_matrices'][wildcards.dataset]
     params:
         index_code = lambda wildcards: wildcards.index
-    resources: mem_mb=20000
+    resources: mem_mb=30000
     run:
         import pandas as pd
         import json
@@ -469,7 +469,7 @@ rule get_trajectory_times:
         icd_map=config['icd_map_file']
     params:
         index_code=lambda wildcards: wildcards.index
-    resources: mem_mb = 15000
+    resources: mem_mb = 30000
     run:
         import pandas as pd
         import subprocess as sub
